@@ -1228,15 +1228,20 @@ document.addEventListener("click",e=>{
 /* ══════════════════════════════════════════
    💳 WALLET PAGE
 ══════════════════════════════════════════ */
-function buildWalletPage(){
-  // Refresh balance from API
-  if(authToken) fetch(API+'/auth/me',{headers:getHeaders()}).then(r=>r.json()).then(d=>{
+async function refreshBalance(){
+  if(!authToken) return;
+  try {
+    const d=await (await fetch(API+'/auth/me',{headers:getHeaders()})).json();
     currentUser={...currentUser,...d};
     localStorage.setItem('sp_user',JSON.stringify(currentUser));
-    // Re-render just balance display
     const balEl=document.querySelector('[data-balance]');
     if(balEl) balEl.textContent=VND(currentUser.balance);
-  }).catch(()=>{});
+  } catch(e){}
+}
+
+function buildWalletPage(){
+  // Refresh balance from API
+  refreshBalance();
 
   const tab=state.walletTab||"overview";
   const txTypes={
@@ -3735,6 +3740,7 @@ async function buyTicketAPI(ticketId) {
     if (!res.ok) { showToast(data.error || 'Lỗi mua vé', 'var(--red)', '❌'); return; }
 
     showToast('Đặt mua thành công! Tiền đang được giữ escrow 🔒', 'var(--ok)', '✅');
+    await refreshBalance();
     await loadOrdersFromAPI();
     await loadTicketsFromAPI();
     setState({ page: 'orders' });
@@ -3749,6 +3755,7 @@ async function confirmOrderAPI(orderId) {
     const data = await res.json();
     if (!res.ok) { showToast(data.error, 'var(--red)', '❌'); return; }
     showToast('Xác nhận thành công! Tiền đã giải ngân cho người bán 💸', 'var(--ok)', '🎉');
+    await refreshBalance();
     await loadOrdersFromAPI();
     setState({});
   } catch(e) { showToast('Lỗi kết nối', 'var(--red)', '❌'); }

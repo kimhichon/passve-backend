@@ -2196,11 +2196,17 @@ function buildOrderDetail(o){
 
   var disputeHTML="";
   if(o.status==="disputed"){
+    var dBy=o.dispute_opened_by==="buyer"?"Người mua":o.dispute_opened_by==="seller"?"Người bán":(o.dispute&&o.dispute.opened?"":"");
+    var dReason=o.dispute_reason||(o.dispute&&o.dispute.desc)||"";
+    var dDesc=o.dispute_description||(o.dispute&&o.dispute.desc)||"";
+    var dDate=o.dispute_opened_at?new Date(o.dispute_opened_at).toLocaleString("vi-VN",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):(o.dispute&&o.dispute.opened)||"";
     disputeHTML='<div style="margin:16px 20px 0;background:var(--redBg);border:1px solid rgba(240,86,106,.3);border-radius:14px;padding:16px;">'
-      +'<div style="font-size:13px;font-weight:800;color:var(--red);margin-bottom:6px;">⚠️ Khiếu nại đang mở</div>'
-      +'<div style="font-size:11.5px;color:var(--sub);margin-bottom:5px;">'+o.dispute.desc+'</div>'
-      +'<div style="font-size:10px;color:var(--hint);">Mở lúc '+o.dispute.opened+' · <strong style="color:var(--warn);">Đang xem xét</strong></div>'
-      +'<div style="margin-top:10px;font-size:11px;color:var(--sub);">📞 Đội hỗ trợ SafePass sẽ liên hệ trong 24h.</div></div>';
+      +'<div style="font-size:13px;font-weight:800;color:var(--red);margin-bottom:8px;">⚠️ Khiếu nại đang mở</div>'
+      +'<div style="font-size:11.5px;font-weight:700;color:var(--text);margin-bottom:4px;">'+dReason+'</div>'
+      +(dDesc&&dDesc!==dReason?'<div style="font-size:11px;color:var(--sub);margin-bottom:6px;">'+dDesc+'</div>':"")
+      +'<div style="font-size:10px;color:var(--hint);">'      +(dBy?'Mở bởi <strong>'+dBy+'</strong> · ':"")+dDate
+      +'</div>'
+      +'<div style="margin-top:10px;font-size:11px;color:var(--sub);">📞 Đội hỗ trợ SafePass sẽ liên hệ trong 24h. Tiền escrow giữ nguyên.</div></div>';
   }
 
   // Countdown 48h escrow timeout
@@ -2430,12 +2436,34 @@ function confirmReceived(oid){
   showToast("Hoàn tất! Giao dịch thành công 🎉","var(--ok)","🎉");
   setTimeout(()=>openReviewModal(oid),1200);
 }
-function submitDispute(oid){
-  var o=ORDERS.find(function(x){return x.id===oid;});if(!o)return;
+async function submitDispute(oid){
   var rEl=document.querySelector("input[name='dreason']:checked");
-  var desc=document.getElementById("ddesc")?document.getElementById("ddesc").value:"Không có mô tả.";
+  var desc=(document.getElementById("ddesc")||{}).value||"";
+  if(!rEl){showToast("Vui lòng chọn lý do khiếu nại","var(--red)","⚠️");return;}
+
+  if(authToken){
+    closeModal();
+    showToast("Đang gửi khiếu nại...","var(--warn)","⏳");
+    try{
+      const res=await fetch(API+"/orders/"+oid+"/dispute",{
+        method:"POST",headers:getHeaders(),
+        body:JSON.stringify({reason_index:Number(rEl.value),description:desc})
+      });
+      const data=await res.json();
+      if(!res.ok) throw new Error(data.error||"Lỗi gửi khiếu nại");
+      await loadOrdersFromAPI();
+      setState({activeOrder:oid});
+      showToast("Khiếu nại đã gửi. Phản hồi trong 24h.","var(--red)","⚠️");
+    }catch(e){
+      showToast(e.message,"var(--red)","❌");
+    }
+    return;
+  }
+
+  // Fallback demo
+  var o=ORDERS.find(function(x){return x.id===oid;});if(!o)return;
   o.status="disputed";
-  o.dispute={reason:rEl?rEl.value:"other",desc:desc||"Không có mô tả.",opened:new Date().toLocaleDateString("vi-VN"),status:"reviewing"};
+  o.dispute={reason:rEl.value,desc:desc||"Không có mô tả.",opened:new Date().toLocaleDateString("vi-VN"),status:"reviewing"};
   o.timeline.push({t:now(),e:"Khiếu nại đã được gửi",i:"⚠️",c:"var(--red)"});
   o.timeline.push({t:now(),e:"Đội hỗ trợ đang xem xét",i:"🔍",c:"var(--warn)"});
   closeModal();
@@ -3137,7 +3165,8 @@ async function submitSellForm(){
   // Reset form + photos
   sellForm={title:"",category:"concerts",location:"TP.HCM",date:"",section:"",price:"",original_price:"",quantity:1,description:"",step:0};
   sellPhotos=[];
-  setState({page:"search"});
+  await loadMyTicketsFromAPI();
+  setState({sellTab:'listings'});
 }
 
 /* ══════════════════════════════════════════
@@ -3717,7 +3746,7 @@ async function loadOrdersFromAPI() {
     const buyOrders = await buyRes.json();
     const sellOrders = await sellRes.json();
 
-    const mapStatus = s => ({ waiting_qr:'awaiting_seller', waiting_confirm:'ticket_uploaded', completed:'completed', disputed:'disputed' }[s] || s);
+    const mapStatus = s => ({ waiting_qr:'awaiting_seller', waiting_confirm:'ticket_uploaded', completed:'completed', disputed:'disputed', refunded:'refunded' }[s] || s);
 
     const mapOrder = (o, role) => ({
       id: o.id,

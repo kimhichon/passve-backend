@@ -128,6 +128,19 @@ app.get('/api/my-tickets', auth, async (req, res) => {
   res.json(data || []);
 });
 
+// Xoá listing (chỉ khi available)
+app.delete('/api/tickets/:id', auth, async (req, res) => {
+  const { data: ticket } = await supabase
+    .from('tickets').select('*').eq('id', req.params.id).single();
+
+  if (!ticket) return res.status(404).json({ error: 'Không tìm thấy vé' });
+  if (ticket.seller_id !== req.user.id) return res.status(403).json({ error: 'Không có quyền' });
+  if (ticket.status !== 'available') return res.status(400).json({ error: 'Chỉ có thể xoá vé chưa có đơn đặt' });
+
+  await supabase.from('tickets').delete().eq('id', req.params.id);
+  res.json({ message: 'Đã xoá listing' });
+});
+
 // ════════════════════════════════
 //  ĐƠN HÀNG / ESCROW
 // ════════════════════════════════
@@ -294,6 +307,132 @@ app.get('/api/wallet/transactions', auth, async (req, res) => {
   res.json(data || []);
 });
 
+
+
+// ════════════════════════════════
+//  DISPUTE
+// ════════════════════════════════
+
+const DISPUTE_REASONS = [
+  'QR không hợp lệ / không quét được',
+  'Sai sự kiện / sai khu vực ghế',
+  'Chưa nhận được vé',
+  'QR bị sử dụng trước',
+  'Lý do khác'
+];
+
+// Mở dispute (buyer hoặc seller)
+app.post('/api/orders/:id/dispute', auth, async (req, res) => {
+  const { reason_index, description } = req.body;
+  const { data: order } = await supabase
+    .from('orders').select('*').eq('id', req.params.id).single();
+
+  if (!order) return res.status(404).json({ error: 'Không tìm thấy đơn' });
+
+  const isBuyer = order.buyer_id === req.user.id;
+  const isSeller = order.seller_id === req.user.id;
+  if (!isBuyer && !isSeller) return res.status(403).json({ error: 'Không có quyền' });
+
+  const allowedStatuses = ['waiting_qr', 'waiting_confirm'];
+  if (!allowedStatuses.includes(order.status))
+    return res.status(400).json({ error: 'Không thể khiếu nại ở trạng thái này' });
+
+  if (order.status === 'disputed')
+    return res.status(400).json({ error: 'Đơn đã có khiếu nại đang xử lý' });
+
+  const reasonText = DISPUTE_REASONS[Number(reason_index)] || 'Lý do khác';
+  const openedBy = isBuyer ? 'buyer' : 'seller';
+
+  await supabase.from('orders').update({
+    status: 'disputed',
+    dispute_reason: reasonText,
+    dispute_description: description || '',
+    dispute_opened_by: openedBy,
+    dispute_opened_at: new Date().toISOString()
+  }).eq('id', req.params.id);
+
+  // Ghi transaction (escrow vẫn giữ nguyên)
+  await supabase.from('transactions').insert({
+    user_id: req.user.id,
+    type: 'dispute_opened',
+    amount: 0,
+    description: `Mở khiếu nại: ${order.event_name} — ${reasonText}`,
+    order_id: order.id
+  });
+
+  res.json({ message: 'Khiếu nại đã được gửi. Đội hỗ trợ sẽ phản hồi trong 24h.' });
+});
+
+// Admin resolve dispute → chọn bên thắng
+app.post('/api/admin/orders/:id/resolve', async (req, res) => {
+  const secret = req.headers['x-admin-secret'];
+  if (secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
+
+  const { winner, note } = req.body; // winner: 'buyer' | 'seller'
+  if (!['buyer', 'seller'].includes(winner))
+    return res.status(400).json({ error: 'winner phải là buyer hoặc seller' });
+
+  const { data: order } = await supabase
+    .from('orders').select('*').eq('id', req.params.id).single();
+  if (!order) return res.status(404).json({ error: 'Không tìm thấy đơn' });
+  if (order.status !== 'disputed') return res.status(400).json({ error: 'Đơn không đang ở trạng thái disputed' });
+
+  const { data: buyer } = await supabase.from('users').select('*').eq('id', order.buyer_id).single();
+  const { data: seller } = await supabase.from('users').select('*').eq('id', order.seller_id).single();
+
+  if (winner === 'buyer') {
+    // Hoàn tiền về buyer
+    await supabase.from('users').update({
+      balance: buyer.balance + order.total,
+      escrow: Math.max(0, buyer.escrow - order.total)
+    }).eq('id', order.buyer_id);
+
+    await supabase.from('tickets').update({ status: 'available' }).eq('id', order.ticket_id);
+    await supabase.from('transactions').insert({
+      user_id: order.buyer_id,
+      type: 'refund',
+      amount: order.total,
+      description: `Hoàn tiền sau khiếu nại: ${order.event_name}${note ? ' — ' + note : ''}`,
+      order_id: order.id
+    });
+  } else {
+    // Giải ngân cho seller
+    await supabase.from('users').update({
+      escrow: Math.max(0, buyer.escrow - order.total)
+    }).eq('id', order.buyer_id);
+
+    await supabase.from('users').update({
+      balance: seller.balance + order.price
+    }).eq('id', order.seller_id);
+
+    await supabase.from('tickets').update({ status: 'sold' }).eq('id', order.ticket_id);
+    await supabase.from('transactions').insert([
+      {
+        user_id: order.seller_id,
+        type: 'payout',
+        amount: order.price,
+        description: `Nhận tiền sau khiếu nại: ${order.event_name}${note ? ' — ' + note : ''}`,
+        order_id: order.id
+      },
+      {
+        user_id: order.buyer_id,
+        type: 'dispute_closed',
+        amount: 0,
+        description: `Khiếu nại không thành công: ${order.event_name}`,
+        order_id: order.id
+      }
+    ]);
+  }
+
+  await supabase.from('orders').update({
+    status: winner === 'buyer' ? 'refunded' : 'completed',
+    dispute_resolved_by: winner,
+    dispute_resolved_at: new Date().toISOString(),
+    dispute_note: note || ''
+  }).eq('id', req.params.id);
+
+  res.json({ message: `Đã giải quyết: ${winner} thắng. Tiền đã được xử lý.` });
+});
 
 // ════════════════════════════════
 //  ESCROW TIMEOUT (48h auto-refund)

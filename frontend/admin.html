@@ -293,7 +293,7 @@ function doLogout() {
 }
 
 function adminHeaders() {
-  return { 'Content-Type': 'application/json' };
+  return { 'Content-Type': 'application/json', 'x-admin-secret': ADMIN_SECRET };
 }
 function adminBody(extra = {}) {
   return JSON.stringify({ secret: ADMIN_SECRET, ...extra });
@@ -301,21 +301,22 @@ function adminBody(extra = {}) {
 
 // ── DATA ──
 async function loadAllData() {
-  // Cần token buyer/seller để load orders — dùng endpoint public tickets + admin endpoints
-  // Load tất cả orders qua supabase-style (không có admin GET orders, tạm fetch tickets public)
   try {
-    const [ticketsRes] = await Promise.all([
-      fetch(API + '/tickets?limit=200').then(r => r.json()),
+    const [ticketsRes, disputesRes, ordersRes] = await Promise.all([
+      fetch(API + '/tickets').then(r => r.json()),
+      fetch(API + '/admin/orders?status=disputed', { headers: adminHeaders() }).then(r => r.ok ? r.json() : []),
+      fetch(API + '/admin/orders', { headers: adminHeaders() }).then(r => r.ok ? r.json() : []),
     ]);
     _data.tickets = Array.isArray(ticketsRes) ? ticketsRes : [];
-  } catch(e) {}
+    _data.disputes = Array.isArray(disputesRes) ? disputesRes : [];
+    _data.orders = Array.isArray(ordersRes) ? ordersRes : [];
+  } catch(e) { console.error('loadAllData:', e); }
   lastRefresh = new Date();
   updateDisputeBadge();
 }
 
 async function loadOrdersAdmin() {
-  // Backend chưa có GET /admin/orders — hiển thị hướng dẫn
-  return [];
+  return _data.orders || [];
 }
 
 function updateDisputeBadge() {
@@ -367,18 +368,18 @@ function buildOverview() {
     </div>
     <div class="stat-card">
       <div class="stat-label">Disputes pending</div>
-      <div class="stat-val red" id="stat-disputes">—</div>
+      <div class="stat-val red">${(_data.disputes||[]).length}</div>
       <div class="stat-sub">chờ admin xử lý</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Escrow đang mở</div>
-      <div class="stat-val warn" id="stat-escrow">—</div>
+      <div class="stat-val warn">${(_data.orders||[]).filter(o=>['waiting_qr','waiting_confirm'].includes(o.status)).length}</div>
       <div class="stat-sub">đơn waiting_qr / waiting_confirm</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Backend</div>
-      <div class="stat-val ok">Online</div>
-      <div class="stat-sub">passve.up.railway.app</div>
+      <div class="stat-label">Tổng đơn</div>
+      <div class="stat-val ok">${(_data.orders||[]).length}</div>
+      <div class="stat-sub">tất cả trạng thái</div>
     </div>
   </div>
 
@@ -436,55 +437,33 @@ function buildTicketsTable(tickets) {
 
 // ── DISPUTES ──
 function buildDisputes() {
+  const disputes = _data.disputes || [];
   return `
   <div style="margin-bottom:16px;">
     <div class="section-head">
       <div>
-        <div class="section-title">🔥 Resolve Dispute bằng Order ID</div>
-        <div class="section-sub">Nhập ID đơn hàng đang ở trạng thái "disputed" để xử lý</div>
+        <div class="section-title">🔥 Khiếu nại đang chờ xử lý</div>
+        <div class="section-sub">${disputes.length} đơn disputed</div>
       </div>
+      <button class="btn-action btn-action-primary" onclick="doRefresh().then(renderTab)">🔄 Làm mới</button>
     </div>
-    <div style="background:var(--card);border:1px solid rgba(240,80,104,.2);border-radius:var(--radius);padding:20px;">
-      <div style="display:flex;gap:10px;margin-bottom:16px;">
-        <input id="dispute-order-id" placeholder="Order ID (UUID)..."
-          style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--text);outline:none;font-family:'JetBrains Mono',monospace;"
-          onfocus="this.style.borderColor='var(--brand)'" onblur="this.style.borderColor=''"
-          onkeydown="if(event.key==='Enter')loadDisputeOrder()">
-        <button class="btn-action btn-action-primary" onclick="loadDisputeOrder()">🔍 Tải đơn</button>
-      </div>
-      <div id="dispute-order-result"></div>
-    </div>
-  </div>
 
-  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;">
-    <div class="section-title" style="margin-bottom:12px;">📖 Hướng dẫn tìm Order ID</div>
-    <div style="font-size:13px;color:var(--sub);line-height:1.7;">
-      <p>1. Vào <strong style="color:var(--text)">Supabase Dashboard</strong> → Table <code style="background:var(--card2);padding:1px 6px;border-radius:4px;">orders</code></p>
-      <p>2. Filter: <code style="background:var(--card2);padding:1px 6px;border-radius:4px;">status = disputed</code></p>
-      <p>3. Copy cột <code style="background:var(--card2);padding:1px 6px;border-radius:4px;">id</code> và dán vào ô trên</p>
-      <p style="margin-top:10px;">Hoặc dùng API trực tiếp: cần thêm route <code style="background:var(--card2);padding:1px 6px;border-radius:4px;">GET /api/admin/orders?status=disputed</code> vào backend để tự động load. Xem phần "Nâng cấp backend" bên dưới.</p>
-    </div>
+    ${disputes.length === 0
+      ? `<div class="empty"><div class="empty-icon">✅</div><div class="empty-title">Không có khiếu nại nào</div><div style="font-size:13px;color:var(--hint);margin-top:4px;">Mọi đơn hàng đều ổn</div></div>`
+      : disputes.map(o => buildResolveForm(o.id, o)).join('')
+    }
   </div>
 
   <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-top:16px;">
-    <div class="section-title" style="margin-bottom:12px;">🔧 Nâng cấp backend gợi ý</div>
-    <div style="font-size:12px;color:var(--sub);line-height:1.8;">
-      Thêm route này vào <code style="background:var(--card2);padding:1px 6px;border-radius:4px;">server.js</code> để admin dashboard tự load disputes:
+    <div class="section-title" style="margin-bottom:12px;">🔍 Resolve theo Order ID thủ công</div>
+    <div style="display:flex;gap:10px;">
+      <input id="dispute-order-id" placeholder="Order ID (UUID)..."
+        style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--text);outline:none;font-family:'JetBrains Mono',monospace;"
+        onfocus="this.style.borderColor='var(--brand)'" onblur="this.style.borderColor=''"
+        onkeydown="if(event.key==='Enter')loadDisputeOrder()">
+      <button class="btn-action btn-action-primary" onclick="loadDisputeOrder()">🔍 Tải đơn</button>
     </div>
-    <pre style="margin-top:10px;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:16px;font-size:12px;color:var(--ok);overflow-x:auto;font-family:'JetBrains Mono',monospace;line-height:1.7;">app.get('/api/admin/orders', async (req, res) => {
-  const secret = req.headers['x-admin-secret'];
-  if (secret !== process.env.ADMIN_SECRET)
-    return res.status(403).json({ error: 'Forbidden' });
-
-  const { status } = req.query;
-  let query = supabase.from('orders').select('*')
-    .order('created_at', { ascending: false }).limit(100);
-  if (status) query = query.eq('status', status);
-
-  const { data, error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data || []);
-});</pre>
+    <div id="dispute-order-result" style="margin-top:14px;"></div>
   </div>`;
 }
 
@@ -567,7 +546,37 @@ async function resolveDispute(orderId, winner) {
 
 // ── ORDERS (tra cứu) ──
 function buildOrders() {
+  const orders = _data.orders || [];
+  const statusMap = {
+    waiting_qr: '<span class="pill pill-waiting">⏳ Chờ QR</span>',
+    waiting_confirm: '<span class="pill pill-waiting">📸 Chờ confirm</span>',
+    completed: '<span class="pill pill-completed">✅ Hoàn tất</span>',
+    disputed: '<span class="pill pill-disputed">⚠️ Tranh chấp</span>',
+    refunded: '<span class="pill pill-refunded">↩️ Hoàn tiền</span>',
+  };
   return `
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;">
+    <div class="section-head">
+      <div class="section-title">📋 Tất cả đơn hàng (${orders.length})</div>
+      <button class="btn-action btn-action-primary" onclick="doRefresh().then(renderTab)">🔄 Làm mới</button>
+    </div>
+    ${orders.length === 0
+      ? '<div class="empty"><div class="empty-icon">📋</div><div class="empty-title">Chưa có đơn hàng nào</div></div>'
+      : `<div class="tbl-wrap"><table>
+        <thead><tr><th>Sự kiện</th><th>Buyer</th><th>Seller</th><th>Tổng</th><th>Trạng thái</th><th>Ngày tạo</th></tr></thead>
+        <tbody>${orders.map(o => `<tr>
+          <td><div style="font-weight:500;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.event_name)}</div>
+              <div class="mono" style="font-size:10px;color:var(--hint)">${o.id.slice(0,8)}...</div></td>
+          <td style="font-size:12px">${esc(o.buyer_name)}</td>
+          <td style="font-size:12px">${esc(o.seller_name)}</td>
+          <td class="mono">${fmtVND(o.total)}</td>
+          <td>${statusMap[o.status] || `<span class="pill">${o.status}</span>`}</td>
+          <td class="mono" style="font-size:11px;color:var(--sub)">${o.created_at ? o.created_at.slice(0,10) : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`
+    }
+  </div>
+
   <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;">
     <div class="section-title" style="margin-bottom:12px;">🔍 Tra cứu đơn hàng</div>
     <div style="display:flex;gap:10px;">

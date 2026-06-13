@@ -602,6 +602,44 @@ app.post('/api/admin/process-timeouts', async (req, res) => {
   await processExpiredEscrows();
   res.json({ message: 'Done' });
 });
+
+// ════════════════════════════════
+//  ADMIN ROUTES
+// ════════════════════════════════
+
+// Helper đọc secret từ mọi nguồn
+function adminSecret(req) {
+  return req.query?.secret || req.headers['x-admin-secret'] || req.body?.secret;
+}
+
+// Danh sách orders (filter by status)
+app.get('/api/admin/orders', async (req, res) => {
+  if (adminSecret(req) !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
+  const { status } = req.query;
+  let query = supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(100);
+  if (status) query = query.eq('status', status);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+// Chi tiết 1 order
+app.get('/api/admin/orders/:id', async (req, res) => {
+  if (adminSecret(req) !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
+  const { data } = await supabase.from('orders').select('*').eq('id', req.params.id).single();
+  if (!data) return res.status(404).json({ error: 'Không tìm thấy' });
+  res.json(data);
+});
+
+// Danh sách users
+app.get('/api/admin/users', async (req, res) => {
+  if (adminSecret(req) !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
+  const { data } = await supabase
+    .from('users')
+    .select('id,phone,name,balance,escrow,avg_rating,review_count,created_at')
+    .order('created_at', { ascending: false });
+  res.json(data || []);
+});
 // ── HEALTH CHECK ──
 app.get('/', (req, res) => res.json({ status: 'SafePass API đang chạy ✓' }));
 

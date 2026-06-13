@@ -2571,7 +2571,35 @@ function buildListingDetail(lid){
   const l=ALL_LISTINGS.find(x=>x.id===lid);
   if(!l) return`<div style="padding:40px;text-align:center;color:var(--hint);">Không tìm thấy vé.</div>`;
   const seller=SELLERS[l.seller_id]||{name:"Người bán",avatar:"?",trust:0,verified:false,joined:"",sales:0,rating:0,reviews:0,bio:"",response:""};
-  const reviews=SELLER_REVIEWS[l.seller_id]||[];
+  const reviews=window._sellerReviews&&window._sellerReviews[l.seller_id]
+    ? window._sellerReviews[l.seller_id]
+    : (SELLER_REVIEWS[l.seller_id]||[]);
+  // Fetch reviews from API async (refresh in background)
+  if(authToken||true){
+    fetch(API+'/users/'+l.seller_id+'/reviews')
+      .then(r=>r.json()).then(data=>{
+        if(Array.isArray(data)&&data.length>0){
+          if(!window._sellerReviews) window._sellerReviews={};
+          window._sellerReviews[l.seller_id]=data;
+          const el=document.getElementById('reviews-list-'+l.seller_id);
+          if(el){
+            const stars=n=>Array.from({length:5},(_,i)=>`<span style="color:\${i<Math.round(n)?"var(--gold)":"var(--border2)"};">★</span>`).join("");
+            el.innerHTML=data.map(r=>`
+              <div style="padding:13px 0;border-bottom:1px solid var(--border);">
+                <div style="display:flex;align-items:center;gap:9px;margin-bottom:6px;">
+                  <div style="width:28px;height:28px;border-radius:50%;background:var(--purpleBg);border:1px solid rgba(155,135,245,.3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:var(--purple);">\${(r.buyer_name||"?").slice(0,2).toUpperCase()}</div>
+                  <div style="flex:1;">
+                    <div style="font-size:12px;font-weight:700;">\${r.buyer_name||"Ẩn danh"}</div>
+                    <div style="font-size:10px;color:var(--hint);font-family:'JetBrains Mono',monospace;">\${r.created_at?new Date(r.created_at).toLocaleDateString("vi-VN"):""}</div>
+                  </div>
+                  <div style="font-size:13px;">\${stars(r.rating)}</div>
+                </div>
+                <div style="font-size:12px;color:var(--sub);line-height:1.6;">"\${r.text}"</div>
+              </div>`).join("");
+          }
+        }
+      }).catch(()=>{});
+  }
   const disc=Math.round((1-l.price/l.original_price)*100);
   const tc=l.trust>=80?"var(--ok)":l.trust>=60?"var(--warn)":"var(--red)";
   const wished=state.wishlist.includes(l.id);
@@ -2704,14 +2732,15 @@ function buildListingDetail(lid){
       </div>
 
       <!-- Reviews -->
-      ${reviews.length>0?`
       <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <div style="font-size:10.5px;font-weight:700;color:var(--hint);text-transform:uppercase;letter-spacing:.07em;">⭐ Đánh giá (${reviews.length})</div>
+          <div style="font-size:10.5px;font-weight:700;color:var(--hint);text-transform:uppercase;letter-spacing:.07em;">⭐ Đánh giá</div>
           <div style="font-size:13px;font-weight:800;color:var(--gold);">${stars(seller.rating)} ${seller.rating}</div>
         </div>
-        ${reviewsHTML}
-      </div>`:""}
+        <div id="reviews-list-${l.seller_id}">
+          ${reviewsHTML||'<div style="text-align:center;padding:20px 0;color:var(--hint);font-size:12px;">Chưa có đánh giá nào</div>'}
+        </div>
+      </div>
 
       <!-- Similar listings -->
       ${similar.length>0?`
@@ -3575,9 +3604,29 @@ function appendTag(tag){
     state.reviewText=el.value;
   }
 }
-function submitReview(orderId){
+async function submitReview(orderId){
   const text=state.reviewText||"";
   if(text.trim().length<20){showToast("Vui lòng viết ít nhất 20 ký tự","var(--warn)","⚠️");return;}
+
+  if(authToken){
+    try{
+      const res=await fetch(API+"/orders/"+orderId+"/review",{
+        method:"POST",headers:getHeaders(),
+        body:JSON.stringify({rating:state.reviewStars,text:text.trim()})
+      });
+      const data=await res.json();
+      if(!res.ok){showToast(data.error||"Lỗi gửi đánh giá","var(--red)","❌");return;}
+      showToast("Đánh giá đã gửi! Cảm ơn bạn ⭐","var(--gold)","⭐");
+      state.showReviewModal=false;
+      state.reviewText="";
+      renderModals();
+      return;
+    }catch(e){
+      showToast("Lỗi kết nối","var(--red)","❌");return;
+    }
+  }
+
+  // Fallback demo
   const o=ORDERS?ORDERS.find(x=>x.id===orderId):null;
   const lid=o?o.listingId:null;
   if(lid){

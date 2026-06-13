@@ -282,7 +282,8 @@ async function doLogin() {
   try {
     const res = await fetch(API + '/admin/process-timeouts', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret }
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret })
     });
     if (res.status === 403) {
       document.getElementById('login-err').textContent = 'Secret không đúng.';
@@ -306,7 +307,10 @@ function doLogout() {
 }
 
 function adminHeaders() {
-  return { 'Content-Type': 'application/json', 'x-admin-secret': ADMIN_SECRET };
+  return { 'Content-Type': 'application/json' };
+}
+function adminBody(extra = {}) {
+  return JSON.stringify({ secret: ADMIN_SECRET, ...extra });
 }
 
 // ── DATA ──
@@ -557,7 +561,7 @@ async function resolveDispute(orderId, winner) {
     const res = await fetch(`${API}/admin/orders/${orderId}/resolve`, {
       method: 'POST',
       headers: adminHeaders(),
-      body: JSON.stringify({ winner, note })
+      body: adminBody({ winner, note })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Lỗi không xác định');
@@ -716,7 +720,7 @@ async function doRefresh() {
 async function doProcessTimeouts() {
   try {
     const res = await fetch(API + '/admin/process-timeouts', {
-      method: 'POST', headers: adminHeaders()
+      method: 'POST', headers: adminHeaders(), body: adminBody()
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
